@@ -7,7 +7,7 @@ from staticmap import StaticMap, CircleMarker
 
 app = Flask(__name__)
 CORS(app)
-MODEL_PATH = os.getenv("MODEL_PATH", "modelo_riesgo_bimbo.keras")
+MODEL_PATH = os.getenv("MODEL_PATH", "modelo_riesgo.keras")
 CLASES = ["ALTO", "BAJO", "MEDIO"]
 UMBRAL = 0.65
 modelo = tf.keras.models.load_model(MODEL_PATH)
