@@ -5,6 +5,7 @@ import tensorflow as tf
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from staticmap import StaticMap, CircleMarker
+from PIL import Image
 
 
 # ============================================================
@@ -12,66 +13,193 @@ from staticmap import StaticMap, CircleMarker
 # ============================================================
 
 app = Flask(__name__)
+
 CORS(app)
 
-MODEL_PATH = os.getenv("MODEL_PATH", "modelo_riesgo.keras")
+MODEL_PATH = os.getenv(
+    "MODEL_PATH",
+    "modelo_riesgo.keras"
+)
 
-CLASES = ["ALTO", "BAJO", "MEDIO"]
+CLASES = [
+    "ALTO",
+    "BAJO",
+    "MEDIO"
+]
 
 UMBRAL = 0.65
+
+
+# ============================================================
+# CONFIGURACION DE TENSORFLOW
+# ============================================================
+
+# Reducir uso de CPU/hilos en Render
+tf.config.threading.set_inter_op_parallelism_threads(1)
+tf.config.threading.set_intra_op_parallelism_threads(1)
 
 
 # ============================================================
 # CARGAR MODELO
 # ============================================================
 
-print("Cargando modelo...", flush=True)
+print(
+    "Cargando modelo...",
+    flush=True
+)
 
-modelo = tf.keras.models.load_model(MODEL_PATH)
+modelo = tf.keras.models.load_model(
+    MODEL_PATH
+)
 
-print("Modelo cargado correctamente.", flush=True)
+print(
+    "Modelo cargado correctamente.",
+    flush=True
+)
 
 
 # ============================================================
-# PREPROCESAMIENTO
+# PREPROCESAMIENTO CON PIL + NUMPY
 # ============================================================
 
-preprocesamiento = tf.keras.Sequential([
-    tf.keras.layers.CenterCrop(
-        height=360,
-        width=540
-    ),
-    tf.keras.layers.Resizing(
-        224,
-        224
-    ),
-    tf.keras.layers.Rescaling(
-        1.0 / 127.5,
-        offset=-1
+def preparar_imagen(imagen):
+
+    print(
+        "4. Iniciando preprocesamiento con PIL",
+        flush=True
     )
-])
+
+    # Asegurar RGB
+    imagen = imagen.convert("RGB")
+
+    ancho, alto = imagen.size
+
+    # --------------------------------------------------------
+    # CENTER CROP EQUIVALENTE A 540 x 360
+    # --------------------------------------------------------
+
+    crop_width = min(
+        540,
+        ancho
+    )
+
+    crop_height = min(
+        360,
+        alto
+    )
+
+    izquierda = (
+        ancho - crop_width
+    ) // 2
+
+    superior = (
+        alto - crop_height
+    ) // 2
+
+    derecha = (
+        izquierda + crop_width
+    )
+
+    inferior = (
+        superior + crop_height
+    )
+
+    imagen = imagen.crop(
+        (
+            izquierda,
+            superior,
+            derecha,
+            inferior
+        )
+    )
+
+    print(
+        "5. Center crop terminado",
+        flush=True
+    )
+
+
+    # --------------------------------------------------------
+    # RESIZE 224 x 224
+    # --------------------------------------------------------
+
+    imagen = imagen.resize(
+        (224, 224),
+        Image.Resampling.BILINEAR
+    )
+
+    print(
+        "6. Resize terminado",
+        flush=True
+    )
+
+
+    # --------------------------------------------------------
+    # CONVERTIR A NUMPY
+    # --------------------------------------------------------
+
+    entrada = np.asarray(
+        imagen,
+        dtype=np.float32
+    )
+
+
+    # --------------------------------------------------------
+    # NORMALIZACION -1 A 1
+    # Equivalente a Rescaling(1./127.5, offset=-1)
+    # --------------------------------------------------------
+
+    entrada = (
+        entrada / 127.5
+    ) - 1.0
+
+
+    # Agregar dimension batch
+    entrada = np.expand_dims(
+        entrada,
+        axis=0
+    )
+
+
+    print(
+        f"7. Entrada preparada: {entrada.shape}",
+        flush=True
+    )
+
+    return entrada
 
 
 # ============================================================
 # EVALUAR UBICACION
 # ============================================================
 
-def evaluar_ubicacion(latitud, longitud):
+def evaluar_ubicacion(
+    latitud,
+    longitud
+):
 
     print(
-        f"1. Iniciando evaluacion: {latitud}, {longitud}",
+        f"1. Iniciando evaluacion: "
+        f"{latitud}, {longitud}",
         flush=True
     )
 
-    # --------------------------------------------------------
-    # GENERAR MAPA
-    # --------------------------------------------------------
 
-    mapa = StaticMap(600, 400)
+    # ========================================================
+    # GENERAR MAPA
+    # ========================================================
+
+    mapa = StaticMap(
+        600,
+        400
+    )
 
     mapa.add_marker(
         CircleMarker(
-            (longitud, latitud),
+            (
+                longitud,
+                latitud
+            ),
             "#FF0000",
             12
         )
@@ -82,7 +210,9 @@ def evaluar_ubicacion(latitud, longitud):
         flush=True
     )
 
-    imagen = mapa.render(zoom=17)
+    imagen = mapa.render(
+        zoom=17
+    )
 
     print(
         "3. Mapa generado correctamente",
@@ -90,107 +220,113 @@ def evaluar_ubicacion(latitud, longitud):
     )
 
 
-    # --------------------------------------------------------
-    # CONVERTIR IMAGEN
-    # --------------------------------------------------------
-
-    arreglo = tf.keras.utils.img_to_array(imagen)
-
-    lote = tf.expand_dims(arreglo, axis=0)
-
-    print(
-        "4. Imagen convertida a tensor",
-        flush=True
-    )
-
-
-    # --------------------------------------------------------
+    # ========================================================
     # PREPROCESAMIENTO
-    # --------------------------------------------------------
+    # ========================================================
 
-    entrada = preprocesamiento(lote)
-
-    print(
-        "5. Preprocesamiento terminado",
-        flush=True
+    entrada = preparar_imagen(
+        imagen
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # PREDICCION
-    # --------------------------------------------------------
+    # ========================================================
 
     print(
-        "6. Antes de modelo.predict()",
+        "8. Antes de ejecutar el modelo",
         flush=True
     )
 
-    pred = modelo.predict(
+    # Ejecutar directamente el modelo.
+    # Evitamos model.predict() para reducir overhead.
+    salida = modelo(
         entrada,
-        verbose=0
+        training=False
+    )
+
+    print(
+        "9. Modelo ejecutado",
+        flush=True
+    )
+
+
+    # Convertir salida TensorFlow a NumPy
+    pred = np.asarray(
+        salida
     )[0]
 
-    print(
-        "7. Prediccion terminada",
-        flush=True
-    )
 
     print(
-        f"Probabilidades: {pred}",
+        f"10. Probabilidades: {pred}",
         flush=True
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # POSTPROCESAMIENTO
-    # --------------------------------------------------------
+    # ========================================================
 
-    indice = int(np.argmax(pred))
+    indice = int(
+        np.argmax(pred)
+    )
 
-    clase = CLASES[indice]
+    clase = CLASES[
+        indice
+    ]
 
-    confianza = float(pred[indice])
+    confianza = float(
+        pred[indice]
+    )
+
 
     print(
-        f"8. Clase: {clase}",
+        f"11. Clase: {clase}",
         flush=True
     )
 
     print(
-        f"9. Confianza: {confianza}",
+        f"12. Confianza: {confianza}",
         flush=True
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # PROTOCOLO
-    # --------------------------------------------------------
+    # ========================================================
 
     if confianza < UMBRAL:
 
-        estado = f"REVISION MANUAL (Posible {clase})"
+        estado = (
+            f"REVISION MANUAL "
+            f"(Posible {clase})"
+        )
 
         protocolo = (
             "El modelo no esta suficientemente seguro. "
             "Validar la ruta con un analista."
         )
 
+
     elif clase == "ALTO":
 
         estado = clase
 
         protocolo = (
-            "ALERTA: Asignar custodia o cambiar "
-            "el horario de entrega."
+            "ALERTA: Asignar custodia o "
+            "cambiar el horario de entrega."
         )
+
 
     elif clase == "MEDIO":
 
         estado = clase
 
         protocolo = (
-            "PRECAUCION: Mantener monitoreo GPS activo."
+            "PRECAUCION: Mantener "
+            "monitoreo GPS activo."
         )
+
 
     else:
 
@@ -201,25 +337,30 @@ def evaluar_ubicacion(latitud, longitud):
         )
 
 
-    # --------------------------------------------------------
-    # DESGLOSE DE PROBABILIDADES
-    # --------------------------------------------------------
+    # ========================================================
+    # PROBABILIDADES
+    # ========================================================
 
     desglose = {}
 
-    for i in range(len(CLASES)):
+    for i in range(
+        len(CLASES)
+    ):
 
-        desglose[CLASES[i]] = round(
+        desglose[
+            CLASES[i]
+        ] = round(
             float(pred[i]) * 100,
             2
         )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # RESULTADO
-    # --------------------------------------------------------
+    # ========================================================
 
     resultado = {
+
         "coordenadas": [
             latitud,
             longitud
@@ -241,22 +382,28 @@ def evaluar_ubicacion(latitud, longitud):
             protocolo
     }
 
+
     print(
-        "10. Evaluacion terminada correctamente",
+        "13. Evaluacion terminada correctamente",
         flush=True
     )
+
 
     return resultado
 
 
 # ============================================================
-# RUTA PRINCIPAL
+# API PRINCIPAL
 # ============================================================
 
-@app.route("/", methods=["GET"])
+@app.route(
+    "/",
+    methods=["GET"]
+)
 def inicio():
 
     return jsonify({
+
         "servicio":
             "API de evaluacion de riesgo",
 
@@ -266,10 +413,13 @@ def inicio():
 
 
 # ============================================================
-# SALUD
+# HEALTH CHECK
 # ============================================================
 
-@app.route("/salud", methods=["GET"])
+@app.route(
+    "/salud",
+    methods=["GET"]
+)
 def salud():
 
     return jsonify({
@@ -281,7 +431,10 @@ def salud():
 # PREDICCION
 # ============================================================
 
-@app.route("/predecir", methods=["POST"])
+@app.route(
+    "/predecir",
+    methods=["POST"]
+)
 def predecir():
 
     print(
@@ -295,18 +448,30 @@ def predecir():
             silent=True
         ) or {}
 
+
         print(
             f">>> Datos recibidos: {datos}",
             flush=True
         )
 
+
         lat = float(
-            datos.get("latitud")
+            datos.get(
+                "latitud"
+            )
         )
 
+
         lon = float(
-            datos.get("longitud")
+            datos.get(
+                "longitud"
+            )
         )
+
+
+        # ====================================================
+        # VALIDACION
+        # ====================================================
 
         if not (
             -90 <= lat <= 90
@@ -315,8 +480,10 @@ def predecir():
         ):
 
             return jsonify({
+
                 "error":
                     "Coordenadas fuera de rango."
+
             }), 400
 
 
@@ -325,20 +492,32 @@ def predecir():
             flush=True
         )
 
+
+        # ====================================================
+        # INFERENCIA
+        # ====================================================
+
         resultado = evaluar_ubicacion(
             lat,
             lon
         )
 
+
         print(
-            ">>> Enviando respuesta",
+            ">>> Enviando respuesta al navegador",
             flush=True
         )
 
-        return jsonify(resultado)
+
+        return jsonify(
+            resultado
+        )
 
 
-    except (TypeError, ValueError) as exc:
+    except (
+        TypeError,
+        ValueError
+    ) as exc:
 
         print(
             f"ERROR DE DATOS: {exc}",
@@ -346,9 +525,11 @@ def predecir():
         )
 
         return jsonify({
+
             "error":
-                "Latitud y longitud son obligatorias "
-                "y deben ser numericas."
+                "Latitud y longitud son "
+                "obligatorias y deben ser numericas."
+
         }), 400
 
 
@@ -359,11 +540,18 @@ def predecir():
             flush=True
         )
 
-        app.logger.exception(exc)
+
+        app.logger.exception(
+            exc
+        )
+
 
         return jsonify({
+
             "error":
-                "No fue posible procesar la ubicacion."
+                "No fue posible procesar "
+                "la ubicacion."
+
         }), 500
 
 
@@ -374,12 +562,15 @@ def predecir():
 if __name__ == "__main__":
 
     app.run(
+
         host="0.0.0.0",
+
         port=int(
             os.getenv(
                 "PORT",
                 5000
             )
         ),
+
         debug=False
     )
