@@ -426,7 +426,16 @@ def salud():
         "estado": "ok"
     })
 
+@app.route("/diagnostico", methods=["GET"])
+def diagnostico():
 
+    return jsonify({
+        "modelo": MODEL_PATH,
+        "clases": CLASES,
+        "forma_entrada": str(modelo.input_shape),
+        "forma_salida": str(modelo.output_shape),
+        "umbral": UMBRAL
+    })
 # ============================================================
 # PREDICCION
 # ============================================================
