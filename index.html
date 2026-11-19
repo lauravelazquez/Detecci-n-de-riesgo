@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Evaluación de Riesgo por Ubicación</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="container">
+    <h1>Sistema de Evaluación de Riesgo</h1>
+    <p>Clasificación de zonas de riesgo a vendedores en ruta de ser asaltados en la Ciudad de México y Estado de México</p>
+  </div>
+</header>
+<main class="container grid">
+  <section class="card form-card">
+    <h2>Evaluar ubicación</h2>
+    <form id="riskForm" novalidate>
+      <div class="fields">
+        <label>Latitud<input id="latitud" type="number" step="any" min="-90" max="90" placeholder="Ej. 19.4326" required></label>
+        <label>Longitud<input id="longitud" type="number" step="any" min="-180" max="180" placeholder="Ej. -99.1332" required></label>
+      </div>
+      <div class="actions">
+        <button id="evaluateBtn" type="submit">Evaluar ubicación</button>
+        <button id="locationBtn" class="secondary" type="button">Usar mi ubicación</button>
+      </div>
+      <p id="message" class="message" aria-live="polite">Escribe las coordenadas o selecciona un punto en el mapa.</p>
+    </form>
+  </section>
+  <section class="card map-card">
+    <div class="section-title"><h2>Mapa</h2><span>También puedes hacer clic para elegir el punto</span></div>
+    <div id="map" aria-label="Mapa para seleccionar una ubicación"></div>
+  </section>
+  <section id="resultCard" class="card result-card hidden" aria-live="polite">
+    <div class="result-head"><div><p class="eyebrow dark">RESULTADO DEL MODELO</p><h2 id="riskValue">Pendiente</h2></div><div id="riskBadge" class="badge">--</div></div>
+    <div class="metrics"><div><span>Confianza</span><strong id="confidenceValue">--</strong></div><div><span>Coordenadas</span><strong id="coordinatesValue">--</strong></div></div>
+    <div class="probabilities">
+      <p>Probabilidades</p>
+      <div class="bar-row"><span>ALTO</span><div class="bar"><i id="barAlto"></i></div><b id="probAlto">0%</b></div>
+      <div class="bar-row"><span>MEDIO</span><div class="bar"><i id="barMedio"></i></div><b id="probMedio">0%</b></div>
+      <div class="bar-row"><span>BAJO</span><div class="bar"><i id="barBajo"></i></div><b id="probBajo">0%</b></div>
+    </div>
+    <div class="protocol"><strong>Protocolo sugerido</strong><p id="protocolValue">--</p></div>
+  </section>
+</main>
+<footer>Laura Velazquez Morelos</footer>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="config.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
