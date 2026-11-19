@@ -1,5 +1,4 @@
 import os
-
 import numpy as np
 import tensorflow as tf
 
@@ -9,29 +8,15 @@ from staticmap import StaticMap, CircleMarker
 
 
 # ============================================================
-# CONFIGURACIÓN DE FLASK
+# CONFIGURACION
 # ============================================================
 
 app = Flask(__name__)
-
-# Permitir llamadas desde GitHub Pages
 CORS(app)
 
+MODEL_PATH = os.getenv("MODEL_PATH", "modelo_riesgo.keras")
 
-# ============================================================
-# CONFIGURACIÓN DEL MODELO
-# ============================================================
-
-MODEL_PATH = os.getenv(
-    "MODEL_PATH",
-    "modelo_riesgo.keras"
-)
-
-CLASES = [
-    "ALTO",
-    "BAJO",
-    "MEDIO"
-]
+CLASES = ["ALTO", "BAJO", "MEDIO"]
 
 UMBRAL = 0.65
 
@@ -42,9 +27,7 @@ UMBRAL = 0.65
 
 print("Cargando modelo...", flush=True)
 
-modelo = tf.keras.models.load_model(
-    MODEL_PATH
-)
+modelo = tf.keras.models.load_model(MODEL_PATH)
 
 print("Modelo cargado correctamente.", flush=True)
 
@@ -58,27 +41,25 @@ preprocesamiento = tf.keras.Sequential([
         height=360,
         width=540
     ),
-
     tf.keras.layers.Resizing(
         224,
         224
     ),
-
     tf.keras.layers.Rescaling(
-        1. / 127.5,
+        1.0 / 127.5,
         offset=-1
     )
 ])
 
 
 # ============================================================
-# EVALUACIÓN DE UNA UBICACIÓN
+# EVALUAR UBICACION
 # ============================================================
 
 def evaluar_ubicacion(latitud, longitud):
 
     print(
-        f"1. Iniciando evaluación: {latitud}, {longitud}",
+        f"1. Iniciando evaluacion: {latitud}, {longitud}",
         flush=True
     )
 
@@ -86,10 +67,7 @@ def evaluar_ubicacion(latitud, longitud):
     # GENERAR MAPA
     # --------------------------------------------------------
 
-    mapa = StaticMap(
-        600,
-        400
-    )
+    mapa = StaticMap(600, 400)
 
     mapa.add_marker(
         CircleMarker(
@@ -104,9 +82,7 @@ def evaluar_ubicacion(latitud, longitud):
         flush=True
     )
 
-    imagen = mapa.render(
-        zoom=17
-    )
+    imagen = mapa.render(zoom=17)
 
     print(
         "3. Mapa generado correctamente",
@@ -118,14 +94,9 @@ def evaluar_ubicacion(latitud, longitud):
     # CONVERTIR IMAGEN
     # --------------------------------------------------------
 
-    arreglo = tf.keras.utils.img_to_array(
-        imagen
-    )
+    arreglo = tf.keras.utils.img_to_array(imagen)
 
-    lote = tf.expand_dims(
-        arreglo,
-        0
-    )
+    lote = tf.expand_dims(arreglo, axis=0)
 
     print(
         "4. Imagen convertida a tensor",
@@ -137,9 +108,7 @@ def evaluar_ubicacion(latitud, longitud):
     # PREPROCESAMIENTO
     # --------------------------------------------------------
 
-    entrada = preprocesamiento(
-        lote
-    )
+    entrada = preprocesamiento(lote)
 
     print(
         "5. Preprocesamiento terminado",
@@ -148,7 +117,7 @@ def evaluar_ubicacion(latitud, longitud):
 
 
     # --------------------------------------------------------
-    # PREDICCIÓN
+    # PREDICCION
     # --------------------------------------------------------
 
     print(
@@ -162,12 +131,12 @@ def evaluar_ubicacion(latitud, longitud):
     )[0]
 
     print(
-        "7. Predicción terminada",
+        "7. Prediccion terminada",
         flush=True
     )
 
     print(
-        f"Probabilidades obtenidas: {pred}",
+        f"Probabilidades: {pred}",
         flush=True
     )
 
@@ -176,20 +145,14 @@ def evaluar_ubicacion(latitud, longitud):
     # POSTPROCESAMIENTO
     # --------------------------------------------------------
 
-    indice = int(
-        np.argmax(pred)
-    )
+    indice = int(np.argmax(pred))
 
-    clase = CLASES[
-        indice
-    ]
+    clase = CLASES[indice]
 
-    confianza = float(
-        pred[indice]
-    )
+    confianza = float(pred[indice])
 
     print(
-        f"8. Clase calculada: {clase}",
+        f"8. Clase: {clase}",
         flush=True
     )
 
@@ -205,13 +168,10 @@ def evaluar_ubicacion(latitud, longitud):
 
     if confianza < UMBRAL:
 
-        estado = (
-            f"REVISIÓN MANUAL "
-            f"(Posible {clase})"
-        )
+        estado = f"REVISION MANUAL (Posible {clase})"
 
         protocolo = (
-            "El modelo no está suficientemente seguro. "
+            "El modelo no esta suficientemente seguro. "
             "Validar la ruta con un analista."
         )
 
@@ -220,8 +180,8 @@ def evaluar_ubicacion(latitud, longitud):
         estado = clase
 
         protocolo = (
-            "ALERTA: Asignar custodia o "
-            "cambiar el horario de entrega."
+            "ALERTA: Asignar custodia o cambiar "
+            "el horario de entrega."
         )
 
     elif clase == "MEDIO":
@@ -229,8 +189,7 @@ def evaluar_ubicacion(latitud, longitud):
         estado = clase
 
         protocolo = (
-            "PRECAUCIÓN: Mantener monitoreo "
-            "GPS activo."
+            "PRECAUCION: Mantener monitoreo GPS activo."
         )
 
     else:
@@ -238,16 +197,29 @@ def evaluar_ubicacion(latitud, longitud):
         estado = clase
 
         protocolo = (
-            "RUTA SEGURA: Operación normal."
+            "RUTA SEGURA: Operacion normal."
         )
 
 
     # --------------------------------------------------------
-    # RESPUESTA
+    # DESGLOSE DE PROBABILIDADES
+    # --------------------------------------------------------
+
+    desglose = {}
+
+    for i in range(len(CLASES)):
+
+        desglose[CLASES[i]] = round(
+            float(pred[i]) * 100,
+            2
+        )
+
+
+    # --------------------------------------------------------
+    # RESULTADO
     # --------------------------------------------------------
 
     resultado = {
-
         "coordenadas": [
             latitud,
             longitud
@@ -262,25 +234,15 @@ def evaluar_ubicacion(latitud, longitud):
                 2
             ),
 
-        "desglose_probabilidades": {
-
-            CLASES[i]:
-                round(
-                    float(pred[i]) * 100,
-                    2
-                )
-
-            for i in range(
-                len(CLASES)
-            )
-        },
+        "desglose_probabilidades":
+            desglose,
 
         "protocolo":
             protocolo
     }
 
     print(
-        "10. Evaluación terminada correctamente",
+        "10. Evaluacion terminada correctamente",
         flush=True
     )
 
@@ -288,16 +250,15 @@ def evaluar_ubicacion(latitud, longitud):
 
 
 # ============================================================
-# ENDPOINT PRINCIPAL
+# RUTA PRINCIPAL
 # ============================================================
 
-@app.get("/")
+@app.route("/", methods=["GET"])
 def inicio():
 
     return jsonify({
-
         "servicio":
-            "API de evaluación de riesgo",
+            "API de evaluacion de riesgo",
 
         "estado":
             "activo"
@@ -305,10 +266,10 @@ def inicio():
 
 
 # ============================================================
-# ENDPOINT DE SALUD
+# SALUD
 # ============================================================
 
-@app.get("/salud")
+@app.route("/salud", methods=["GET"])
 def salud():
 
     return jsonify({
@@ -317,25 +278,22 @@ def salud():
 
 
 # ============================================================
-# ENDPOINT DE PREDICCIÓN
+# PREDICCION
 # ============================================================
 
-@app.post("/predecir")
+@app.route("/predecir", methods=["POST"])
 def predecir():
 
     print(
-        ">>> Petición recibida en /predecir",
+        ">>> Peticion recibida en /predecir",
         flush=True
     )
 
     try:
 
-        datos = (
-            request.get_json(
-                silent=True
-            )
-            or {}
-        )
+        datos = request.get_json(
+            silent=True
+        ) or {}
 
         print(
             f">>> Datos recibidos: {datos}",
@@ -343,19 +301,12 @@ def predecir():
         )
 
         lat = float(
-            datos.get(
-                "latitud"
-            )
+            datos.get("latitud")
         )
 
         lon = float(
-            datos.get(
-                "longitud"
-            )
+            datos.get("longitud")
         )
-
-
-        # Validar coordenadas
 
         if not (
             -90 <= lat <= 90
@@ -364,40 +315,30 @@ def predecir():
         ):
 
             return jsonify({
-
                 "error":
                     "Coordenadas fuera de rango."
-
             }), 400
 
 
         print(
-            ">>> Coordenadas válidas",
+            ">>> Coordenadas validas",
             flush=True
         )
-
 
         resultado = evaluar_ubicacion(
             lat,
             lon
         )
 
-
         print(
-            ">>> Enviando respuesta al navegador",
+            ">>> Enviando respuesta",
             flush=True
         )
 
-
-        return jsonify(
-            resultado
-        )
+        return jsonify(resultado)
 
 
-    except (
-        TypeError,
-        ValueError
-    ) as exc:
+    except (TypeError, ValueError) as exc:
 
         print(
             f"ERROR DE DATOS: {exc}",
@@ -405,11 +346,9 @@ def predecir():
         )
 
         return jsonify({
-
             "error":
                 "Latitud y longitud son obligatorias "
-                "y deben ser numéricas."
-
+                "y deben ser numericas."
         }), 400
 
 
@@ -420,17 +359,16 @@ def predecir():
             flush=True
         )
 
-        app.logger.exception(
-            exc
-        )
+        app.logger.exception(exc)
 
         return jsonify({
-
             "error":
-                "No fue posible procesar la ubicación."
+                "No fue posible procesar la ubicacion."
+        }), 500
 
-  =========================================================
-# EJECUCIÓN LOCAL
+
+# ============================================================
+# EJECUCION LOCAL
 # ============================================================
 
 if __name__ == "__main__":
