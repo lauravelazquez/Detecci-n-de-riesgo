@@ -1,42 +1,100 @@
 import os
+import json
+
 import numpy as np
 import tensorflow as tf
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from staticmap import StaticMap, CircleMarker
-from PIL import Image
 
 
 # ============================================================
-# CONFIGURACION
+# CONFIGURACION DE FLASK
 # ============================================================
 
 app = Flask(__name__)
 
 CORS(app)
 
+
+# ============================================================
+# ARCHIVOS DEL MODELO
+# ============================================================
+
 MODEL_PATH = os.getenv(
     "MODEL_PATH",
-    "modelo_riesgo.keras"
+    "modelo_riesgo_zona.keras"
 )
 
-CLASES = [
-    "ALTO",
-    "BAJO",
-    "MEDIO"
-]
+CLASSES_PATH = os.getenv(
+    "CLASSES_PATH",
+    "clases_riesgo_zona.json"
+)
 
-UMBRAL = 0.65
+CONFIG_PATH = os.getenv(
+    "CONFIG_PATH",
+    "configuracion_riesgo_zona.json"
+)
 
 
 # ============================================================
-# CONFIGURACION DE TENSORFLOW
+# REDUCIR CONSUMO DE RECURSOS EN RENDER
 # ============================================================
 
-# Reducir uso de CPU/hilos en Render
 tf.config.threading.set_inter_op_parallelism_threads(1)
+
 tf.config.threading.set_intra_op_parallelism_threads(1)
+
+
+# ============================================================
+# CARGAR CLASES
+# ============================================================
+
+with open(
+    CLASSES_PATH,
+    "r",
+    encoding="utf-8"
+) as archivo:
+
+    CLASES = json.load(
+        archivo
+    )
+
+
+print(
+    "Clases cargadas:",
+    CLASES,
+    flush=True
+)
+
+
+# ============================================================
+# CARGAR CONFIGURACION
+# ============================================================
+
+if os.path.exists(CONFIG_PATH):
+
+    with open(
+        CONFIG_PATH,
+        "r",
+        encoding="utf-8"
+    ) as archivo:
+
+        CONFIGURACION = json.load(
+            archivo
+        )
+
+else:
+
+    CONFIGURACION = {}
+
+
+print(
+    "Configuracion:",
+    CONFIGURACION,
+    flush=True
+)
 
 
 # ============================================================
@@ -44,7 +102,7 @@ tf.config.threading.set_intra_op_parallelism_threads(1)
 # ============================================================
 
 print(
-    "Cargando modelo...",
+    "Cargando modelo de riesgo por zona...",
     flush=True
 )
 
@@ -57,116 +115,147 @@ print(
     flush=True
 )
 
+print(
+    "Entrada del modelo:",
+    modelo.input_shape,
+    flush=True
+)
+
+print(
+    "Salida del modelo:",
+    modelo.output_shape,
+    flush=True
+)
+
 
 # ============================================================
-# PREPROCESAMIENTO CON PIL + NUMPY
+# GENERAR IMAGEN DEL MAPA
 # ============================================================
 
-def preparar_imagen(imagen):
+def generar_imagen_mapa(
+    latitud,
+    longitud
+):
 
     print(
-        "4. Iniciando preprocesamiento con PIL",
+        "1. Generando imagen cartografica...",
         flush=True
     )
 
-    # Asegurar RGB
-    imagen = imagen.convert("RGB")
-
-    ancho, alto = imagen.size
-
-    # --------------------------------------------------------
-    # CENTER CROP EQUIVALENTE A 540 x 360
-    # --------------------------------------------------------
-
-    crop_width = min(
-        540,
-        ancho
+    # Debe coincidir con el entrenamiento
+    mapa = StaticMap(
+        244,
+        244
     )
 
-    crop_height = min(
-        360,
-        alto
-    )
-
-    izquierda = (
-        ancho - crop_width
-    ) // 2
-
-    superior = (
-        alto - crop_height
-    ) // 2
-
-    derecha = (
-        izquierda + crop_width
-    )
-
-    inferior = (
-        superior + crop_height
-    )
-
-    imagen = imagen.crop(
+    marcador = CircleMarker(
         (
-            izquierda,
-            superior,
-            derecha,
-            inferior
-        )
+            longitud,
+            latitud
+        ),
+        "#FF0000",
+        7
+    )
+
+    mapa.add_marker(
+        marcador
+    )
+
+    imagen = mapa.render(
+        zoom=16
     )
 
     print(
-        "5. Center crop terminado",
+        "2. Imagen generada.",
         flush=True
     )
 
+    return imagen
 
-    # --------------------------------------------------------
-    # RESIZE 224 x 224
-    # --------------------------------------------------------
 
-    imagen = imagen.resize(
-        (224, 224),
-        Image.Resampling.BILINEAR
-    )
+# ============================================================
+# PREPARAR IMAGEN PARA EL MODELO
+# ============================================================
+
+def preparar_imagen(
+    imagen
+):
 
     print(
-        "6. Resize terminado",
+        "3. Preparando imagen...",
         flush=True
     )
 
+    # La imagen ya se generó en 244 x 244
+    imagen = imagen.convert(
+        "RGB"
+    )
 
-    # --------------------------------------------------------
-    # CONVERTIR A NUMPY
-    # --------------------------------------------------------
-
-    entrada = np.asarray(
+    arreglo = np.asarray(
         imagen,
         dtype=np.float32
     )
 
+    # El modelo fue entrenado con image_size=(224, 224).
+    # Redimensionamos únicamente, sin normalizar aquí.
+    arreglo = tf.image.resize(
+        arreglo,
+        (
+            224,
+            224
+        )
+    )
 
-    # --------------------------------------------------------
-    # NORMALIZACION -1 A 1
-    # Equivalente a Rescaling(1./127.5, offset=-1)
-    # --------------------------------------------------------
-
-    entrada = (
-        entrada / 127.5
-    ) - 1.0
-
-
-    # Agregar dimension batch
     entrada = np.expand_dims(
-        entrada,
+        arreglo.numpy(),
         axis=0
     )
 
+    print(
+        "Forma de entrada:",
+        entrada.shape,
+        flush=True
+    )
 
     print(
-        f"7. Entrada preparada: {entrada.shape}",
+        "Rango de pixeles:",
+        float(entrada.min()),
+        float(entrada.max()),
         flush=True
     )
 
     return entrada
+
+
+# ============================================================
+# DEFINIR PROTOCOLO
+# ============================================================
+
+def obtener_protocolo(
+    clase
+):
+
+    if clase == "ALTO":
+
+        return (
+            "ALERTA: Zona clasificada con alta "
+            "concentracion historica de asaltos. "
+            "Considerar cambio de horario, monitoreo GPS "
+            "y medidas adicionales de seguridad."
+        )
+
+    if clase == "MEDIO":
+
+        return (
+            "PRECAUCION: Zona con concentracion historica "
+            "intermedia. Mantener monitoreo GPS activo."
+        )
+
+    return (
+        "RIESGO RELATIVO BAJO: La zona presenta menor "
+        "concentracion historica frente a las zonas "
+        "utilizadas para entrenar el modelo."
+    )
 
 
 # ============================================================
@@ -179,96 +268,44 @@ def evaluar_ubicacion(
 ):
 
     print(
-        f"1. Iniciando evaluacion: "
-        f"{latitud}, {longitud}",
+        f"Evaluando: {latitud}, {longitud}",
         flush=True
     )
 
-
-    # ========================================================
-    # GENERAR MAPA
-    # ========================================================
-
-    mapa = StaticMap(
-        600,
-        400
+    imagen = generar_imagen_mapa(
+        latitud,
+        longitud
     )
-
-    mapa.add_marker(
-        CircleMarker(
-            (
-                longitud,
-                latitud
-            ),
-            "#FF0000",
-            12
-        )
-    )
-
-    print(
-        "2. Antes de generar mapa",
-        flush=True
-    )
-
-    imagen = mapa.render(
-        zoom=17
-    )
-
-    print(
-        "3. Mapa generado correctamente",
-        flush=True
-    )
-
-
-    # ========================================================
-    # PREPROCESAMIENTO
-    # ========================================================
 
     entrada = preparar_imagen(
         imagen
     )
 
-
-    # ========================================================
-    # PREDICCION
-    # ========================================================
-
     print(
-        "8. Antes de ejecutar el modelo",
+        "4. Ejecutando modelo...",
         flush=True
     )
 
-    # Ejecutar directamente el modelo.
-    # Evitamos model.predict() para reducir overhead.
+    # Evita el overhead de model.predict()
     salida = modelo(
         entrada,
         training=False
     )
 
-    print(
-        "9. Modelo ejecutado",
-        flush=True
-    )
-
-
-    # Convertir salida TensorFlow a NumPy
-    pred = np.asarray(
+    probabilidades = np.asarray(
         salida
     )[0]
 
-
     print(
-        f"10. Probabilidades: {pred}",
+        "5. Probabilidades:",
+        probabilidades,
         flush=True
     )
 
-
-    # ========================================================
-    # POSTPROCESAMIENTO
-    # ========================================================
-
     indice = int(
-        np.argmax(pred)
+        np.argmax(
+            probabilidades
+        )
     )
 
     clase = CLASES[
@@ -276,98 +313,32 @@ def evaluar_ubicacion(
     ]
 
     confianza = float(
-        pred[indice]
+        probabilidades[indice]
     )
-
-
-    print(
-        f"11. Clase: {clase}",
-        flush=True
-    )
-
-    print(
-        f"12. Confianza: {confianza}",
-        flush=True
-    )
-
-
-    # ========================================================
-    # PROTOCOLO
-    # ========================================================
-
-    if confianza < UMBRAL:
-
-        estado = (
-            f"REVISION MANUAL "
-            f"(Posible {clase})"
-        )
-
-        protocolo = (
-            "El modelo no esta suficientemente seguro. "
-            "Validar la ruta con un analista."
-        )
-
-
-    elif clase == "ALTO":
-
-        estado = clase
-
-        protocolo = (
-            "ALERTA: Asignar custodia o "
-            "cambiar el horario de entrega."
-        )
-
-
-    elif clase == "MEDIO":
-
-        estado = clase
-
-        protocolo = (
-            "PRECAUCION: Mantener "
-            "monitoreo GPS activo."
-        )
-
-
-    else:
-
-        estado = clase
-
-        protocolo = (
-            "RUTA SEGURA: Operacion normal."
-        )
-
-
-    # ========================================================
-    # PROBABILIDADES
-    # ========================================================
 
     desglose = {}
 
-    for i in range(
-        len(CLASES)
+    for posicion, nombre_clase in enumerate(
+        CLASES
     ):
 
         desglose[
-            CLASES[i]
+            nombre_clase
         ] = round(
-            float(pred[i]) * 100,
+            float(
+                probabilidades[posicion]
+            ) * 100,
             2
         )
 
-
-    # ========================================================
-    # RESULTADO
-    # ========================================================
-
     resultado = {
-
         "coordenadas": [
-            latitud,
-            longitud
+            round(latitud, 8),
+            round(longitud, 8)
         ],
 
         "riesgo_detectado":
-            estado,
+            clase,
 
         "confianza_porcentaje":
             round(
@@ -379,21 +350,28 @@ def evaluar_ubicacion(
             desglose,
 
         "protocolo":
-            protocolo
+            obtener_protocolo(
+                clase
+            ),
+
+        "interpretacion": (
+            "El resultado representa el nivel relativo "
+            "de concentracion historica de asaltos "
+            "aprendido por el modelo visual."
+        )
     }
 
-
     print(
-        "13. Evaluacion terminada correctamente",
+        "6. Resultado:",
+        resultado,
         flush=True
     )
-
 
     return resultado
 
 
 # ============================================================
-# API PRINCIPAL
+# RUTA PRINCIPAL
 # ============================================================
 
 @app.route(
@@ -403,17 +381,22 @@ def evaluar_ubicacion(
 def inicio():
 
     return jsonify({
-
         "servicio":
-            "API de evaluacion de riesgo",
+            "API de riesgo por zona",
 
         "estado":
-            "activo"
+            "activo",
+
+        "modelo":
+            MODEL_PATH,
+
+        "clases":
+            CLASES
     })
 
 
 # ============================================================
-# HEALTH CHECK
+# RUTA DE SALUD
 # ============================================================
 
 @app.route(
@@ -423,21 +406,48 @@ def inicio():
 def salud():
 
     return jsonify({
-        "estado": "ok"
+        "estado":
+            "ok",
+
+        "modelo":
+            "cargado"
     })
 
-@app.route("/diagnostico", methods=["GET"])
+
+# ============================================================
+# RUTA DE DIAGNOSTICO
+# ============================================================
+
+@app.route(
+    "/diagnostico",
+    methods=["GET"]
+)
 def diagnostico():
 
     return jsonify({
-        "modelo": MODEL_PATH,
-        "clases": CLASES,
-        "forma_entrada": str(modelo.input_shape),
-        "forma_salida": str(modelo.output_shape),
-        "umbral": UMBRAL
+        "modelo":
+            MODEL_PATH,
+
+        "clases":
+            CLASES,
+
+        "entrada":
+            str(
+                modelo.input_shape
+            ),
+
+        "salida":
+            str(
+                modelo.output_shape
+            ),
+
+        "configuracion":
+            CONFIGURACION
     })
+
+
 # ============================================================
-# PREDICCION
+# RUTA DE PREDICCION
 # ============================================================
 
 @app.route(
@@ -447,7 +457,7 @@ def diagnostico():
 def predecir():
 
     print(
-        ">>> Peticion recibida en /predecir",
+        "Peticion recibida en /predecir",
         flush=True
     )
 
@@ -457,110 +467,64 @@ def predecir():
             silent=True
         ) or {}
 
-
-        print(
-            f">>> Datos recibidos: {datos}",
-            flush=True
-        )
-
-
-        lat = float(
+        latitud = float(
             datos.get(
                 "latitud"
             )
         )
 
-
-        lon = float(
+        longitud = float(
             datos.get(
                 "longitud"
             )
         )
 
-
-        # ====================================================
-        # VALIDACION
-        # ====================================================
-
         if not (
-            -90 <= lat <= 90
+            -90 <= latitud <= 90
             and
-            -180 <= lon <= 180
+            -180 <= longitud <= 180
         ):
 
             return jsonify({
-
                 "error":
                     "Coordenadas fuera de rango."
-
             }), 400
 
-
-        print(
-            ">>> Coordenadas validas",
-            flush=True
-        )
-
-
-        # ====================================================
-        # INFERENCIA
-        # ====================================================
-
         resultado = evaluar_ubicacion(
-            lat,
-            lon
+            latitud,
+            longitud
         )
-
-
-        print(
-            ">>> Enviando respuesta al navegador",
-            flush=True
-        )
-
 
         return jsonify(
             resultado
         )
 
-
     except (
         TypeError,
         ValueError
-    ) as exc:
-
-        print(
-            f"ERROR DE DATOS: {exc}",
-            flush=True
-        )
+    ):
 
         return jsonify({
-
             "error":
-                "Latitud y longitud son "
-                "obligatorias y deben ser numericas."
-
+                "Latitud y longitud son obligatorias "
+                "y deben ser numericas."
         }), 400
 
-
-    except Exception as exc:
+    except Exception as error:
 
         print(
-            f"ERROR DURANTE INFERENCIA: {exc}",
+            "ERROR:",
+            str(error),
             flush=True
         )
 
-
         app.logger.exception(
-            exc
+            error
         )
 
-
         return jsonify({
-
             "error":
-                "No fue posible procesar "
-                "la ubicacion."
-
+                "No fue posible evaluar la zona."
         }), 500
 
 
@@ -571,15 +535,12 @@ def predecir():
 if __name__ == "__main__":
 
     app.run(
-
         host="0.0.0.0",
-
         port=int(
             os.getenv(
                 "PORT",
                 5000
             )
         ),
-
         debug=False
     )
