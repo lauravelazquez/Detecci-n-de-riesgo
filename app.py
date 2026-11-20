@@ -2,25 +2,20 @@ import os
 import json
 
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from staticmap import StaticMap, CircleMarker
+from sklearn.neighbors import BallTree
 
 
-# ============================================================
-# CONFIGURACION DE FLASK
-# ============================================================
 
 app = Flask(__name__)
-
 CORS(app)
 
 
-# ============================================================
-# ARCHIVOS DEL MODELO
-# ============================================================
 
 MODEL_PATH = os.getenv(
     "MODEL_PATH",
@@ -32,24 +27,22 @@ CLASSES_PATH = os.getenv(
     "clases_riesgo_zona.json"
 )
 
-CONFIG_PATH = os.getenv(
-    "CONFIG_PATH",
-    "configuracion_riesgo_zona.json"
+EVENTS_PATH = os.getenv(
+    "EVENTS_PATH",
+    "eventos_historicos.csv"
 )
 
 
-# ============================================================
-# REDUCIR CONSUMO DE RECURSOS EN RENDER
-# ============================================================
 
 tf.config.threading.set_inter_op_parallelism_threads(1)
-
 tf.config.threading.set_intra_op_parallelism_threads(1)
 
 
-# ============================================================
-# CARGAR CLASES
-# ============================================================
+
+print(
+    "Cargando clases...",
+    flush=True
+)
 
 with open(
     CLASSES_PATH,
@@ -57,52 +50,19 @@ with open(
     encoding="utf-8"
 ) as archivo:
 
-    CLASES = json.load(
-        archivo
-    )
+    CLASES = json.load(archivo)
 
 
 print(
-    "Clases cargadas:",
+    "Clases:",
     CLASES,
     flush=True
 )
 
 
-# ============================================================
-# CARGAR CONFIGURACION
-# ============================================================
-
-if os.path.exists(CONFIG_PATH):
-
-    with open(
-        CONFIG_PATH,
-        "r",
-        encoding="utf-8"
-    ) as archivo:
-
-        CONFIGURACION = json.load(
-            archivo
-        )
-
-else:
-
-    CONFIGURACION = {}
-
 
 print(
-    "Configuracion:",
-    CONFIGURACION,
-    flush=True
-)
-
-
-# ============================================================
-# CARGAR MODELO
-# ============================================================
-
-print(
-    "Cargando modelo de riesgo por zona...",
+    "Cargando modelo...",
     flush=True
 )
 
@@ -110,43 +70,238 @@ modelo = tf.keras.models.load_model(
     MODEL_PATH
 )
 
+
 print(
     "Modelo cargado correctamente.",
     flush=True
 )
 
 print(
-    "Entrada del modelo:",
+    "Entrada:",
     modelo.input_shape,
     flush=True
 )
 
 print(
-    "Salida del modelo:",
+    "Salida:",
     modelo.output_shape,
     flush=True
 )
 
 
-# ============================================================
-# GENERAR IMAGEN DEL MAPA
-# ============================================================
 
-def generar_imagen_mapa(
+print(
+    "Cargando eventos historicos...",
+    flush=True
+)
+
+eventos = pd.read_csv(
+    EVENTS_PATH
+)
+
+
+eventos.columns = [
+    str(columna)
+    .strip()
+    .upper()
+
+    for columna
+    in eventos.columns
+]
+
+
+# Verificar columnas obligatorias
+
+columnas_requeridas = {
+    "LATITUD",
+    "LONGITUD"
+}
+
+
+if not columnas_requeridas.issubset(
+    eventos.columns
+):
+
+    raise ValueError(
+        "eventos_historicos.csv debe contener "
+        "las columnas LATITUD y LONGITUD."
+    )
+
+
+# Convertir coordenadas
+
+eventos["LATITUD"] = pd.to_numeric(
+    eventos["LATITUD"],
+    errors="coerce"
+)
+
+eventos["LONGITUD"] = pd.to_numeric(
+    eventos["LONGITUD"],
+    errors="coerce"
+)
+
+
+# Eliminar registros sin coordenadas
+
+eventos = (
+    eventos
+    .dropna(
+        subset=[
+            "LATITUD",
+            "LONGITUD"
+        ]
+    )
+    .copy()
+)
+
+
+# Validar rangos
+
+eventos = eventos[
+    eventos["LATITUD"].between(
+        -90,
+        90
+    )
+    &
+    eventos["LONGITUD"].between(
+        -180,
+        180
+    )
+].copy()
+
+
+print(
+    "Eventos historicos cargados:",
+    len(eventos),
+    flush=True
+)
+
+
+
+RADIO_TIERRA_KM = 6371.0088
+
+
+coordenadas_eventos = eventos[
+    [
+        "LATITUD",
+        "LONGITUD"
+    ]
+].to_numpy(
+    dtype=np.float64
+)
+
+
+coordenadas_eventos_rad = np.radians(
+    coordenadas_eventos
+)
+
+
+arbol_eventos = BallTree(
+    coordenadas_eventos_rad,
+    metric="haversine"
+)
+
+
+print(
+    "Indice espacial creado correctamente.",
+    flush=True
+)
+
+
+
+def contar_eventos_radio(
+    latitud,
+    longitud,
+    radio_km
+):
+
+    coordenada = np.radians(
+        [[
+            latitud,
+            longitud
+        ]]
+    )
+
+
+    indices = arbol_eventos.query_radius(
+        coordenada,
+        r=radio_km / RADIO_TIERRA_KM
+    )[0]
+
+
+    return int(
+        len(indices)
+    )
+
+
+
+def obtener_conteos(
+    latitud,
+    longitud
+):
+
+    conteos = {
+
+        "250m":
+            contar_eventos_radio(
+                latitud,
+                longitud,
+                0.25
+            ),
+
+        "500m":
+            contar_eventos_radio(
+                latitud,
+                longitud,
+                0.50
+            ),
+
+        "1km":
+            contar_eventos_radio(
+                latitud,
+                longitud,
+                1.00
+            ),
+
+        "2km":
+            contar_eventos_radio(
+                latitud,
+                longitud,
+                2.00
+            )
+    }
+
+
+    print(
+        "Eventos encontrados:",
+        conteos,
+        flush=True
+    )
+
+
+    return conteos
+
+
+
+def generar_mapa(
     latitud,
     longitud
 ):
 
     print(
-        "1. Generando imagen cartografica...",
+        "Generando mapa...",
         flush=True
     )
 
-    # Debe coincidir con el entrenamiento
+
+    # IMPORTANTE:
+    # Debe coincidir con las imagenes de entrenamiento
+
     mapa = StaticMap(
         244,
         244
     )
+
 
     marcador = CircleMarker(
         (
@@ -157,47 +312,50 @@ def generar_imagen_mapa(
         7
     )
 
+
     mapa.add_marker(
         marcador
     )
+
 
     imagen = mapa.render(
         zoom=16
     )
 
+
     print(
-        "2. Imagen generada.",
+        "Mapa generado.",
         flush=True
     )
+
 
     return imagen
 
 
-# ============================================================
-# PREPARAR IMAGEN PARA EL MODELO
-# ============================================================
 
 def preparar_imagen(
     imagen
 ):
 
     print(
-        "3. Preparando imagen...",
+        "Preparando imagen...",
         flush=True
     )
 
-    # La imagen ya se generó en 244 x 244
+
     imagen = imagen.convert(
         "RGB"
     )
+
 
     arreglo = np.asarray(
         imagen,
         dtype=np.float32
     )
 
-    # El modelo fue entrenado con image_size=(224, 224).
-    # Redimensionamos únicamente, sin normalizar aquí.
+
+    # Durante el entrenamiento utilizaste 224x224
+
     arreglo = tf.image.resize(
         arreglo,
         (
@@ -206,10 +364,12 @@ def preparar_imagen(
         )
     )
 
+
     entrada = np.expand_dims(
         arreglo.numpy(),
         axis=0
     )
+
 
     print(
         "Forma de entrada:",
@@ -217,19 +377,28 @@ def preparar_imagen(
         flush=True
     )
 
+
     print(
-        "Rango de pixeles:",
-        float(entrada.min()),
-        float(entrada.max()),
+        "Min pixel:",
+        float(
+            entrada.min()
+        ),
         flush=True
     )
+
+
+    print(
+        "Max pixel:",
+        float(
+            entrada.max()
+        ),
+        flush=True
+    )
+
 
     return entrada
 
 
-# ============================================================
-# DEFINIR PROTOCOLO
-# ============================================================
 
 def obtener_protocolo(
     clase
@@ -240,27 +409,35 @@ def obtener_protocolo(
         return (
             "ALERTA: Zona clasificada con alta "
             "concentracion historica de asaltos. "
-            "Considerar cambio de horario, monitoreo GPS "
-            "y medidas adicionales de seguridad."
+            "Considerar monitoreo GPS y medidas "
+            "adicionales de seguridad."
         )
+
 
     if clase == "MEDIO":
 
         return (
-            "PRECAUCION: Zona con concentracion historica "
-            "intermedia. Mantener monitoreo GPS activo."
+            "PRECAUCION: Zona clasificada con "
+            "concentracion historica intermedia. "
+            "Mantener monitoreo GPS activo."
         )
 
+
+    if clase == "BAJO":
+
+        return (
+            "RIESGO RELATIVO BAJO: La zona presenta "
+            "menor concentracion historica frente "
+            "a las zonas utilizadas para entrenar "
+            "el modelo."
+        )
+
+
     return (
-        "RIESGO RELATIVO BAJO: La zona presenta menor "
-        "concentracion historica frente a las zonas "
-        "utilizadas para entrenar el modelo."
+        "Nivel de riesgo no reconocido."
     )
 
 
-# ============================================================
-# EVALUAR UBICACION
-# ============================================================
 
 def evaluar_ubicacion(
     latitud,
@@ -268,39 +445,67 @@ def evaluar_ubicacion(
 ):
 
     print(
-        f"Evaluando: {latitud}, {longitud}",
+        "",
         flush=True
     )
 
-    imagen = generar_imagen_mapa(
+    print(
+        "========================================",
+        flush=True
+    )
+
+    print(
+        f"Evaluando ubicacion: "
+        f"{latitud}, {longitud}",
+        flush=True
+    )
+
+
+
+    conteos = obtener_conteos(
         latitud,
         longitud
     )
+
+
+
+    imagen = generar_mapa(
+        latitud,
+        longitud
+    )
+
+
 
     entrada = preparar_imagen(
         imagen
     )
 
+
+
     print(
-        "4. Ejecutando modelo...",
+        "Ejecutando modelo...",
         flush=True
     )
 
-    # Evita el overhead de model.predict()
+
     salida = modelo(
         entrada,
         training=False
     )
 
+
     probabilidades = np.asarray(
         salida
     )[0]
 
+
     print(
-        "5. Probabilidades:",
+        "Probabilidades:",
         probabilidades,
         flush=True
     )
+
+
 
     indice = int(
         np.argmax(
@@ -308,15 +513,36 @@ def evaluar_ubicacion(
         )
     )
 
+
     clase = CLASES[
         indice
     ]
 
+
     confianza = float(
-        probabilidades[indice]
+        probabilidades[
+            indice
+        ]
     )
 
+
+    print(
+        "Riesgo:",
+        clase,
+        flush=True
+    )
+
+
+    print(
+        "Confianza:",
+        confianza,
+        flush=True
+    )
+
+
+
     desglose = {}
+
 
     for posicion, nombre_clase in enumerate(
         CLASES
@@ -326,19 +552,32 @@ def evaluar_ubicacion(
             nombre_clase
         ] = round(
             float(
-                probabilidades[posicion]
+                probabilidades[
+                    posicion
+                ]
             ) * 100,
             2
         )
 
+
+
     resultado = {
+
         "coordenadas": [
-            round(latitud, 8),
-            round(longitud, 8)
+            round(
+                latitud,
+                8
+            ),
+            round(
+                longitud,
+                8
+            )
         ],
+
 
         "riesgo_detectado":
             clase,
+
 
         "confianza_porcentaje":
             round(
@@ -346,33 +585,44 @@ def evaluar_ubicacion(
                 2
             ),
 
+
         "desglose_probabilidades":
             desglose,
+
+
+        "eventos_historicos": {
+
+            "250m":
+                conteos["250m"],
+
+            "500m":
+                conteos["500m"],
+
+            "1km":
+                conteos["1km"],
+
+            "2km":
+                conteos["2km"]
+        },
+
 
         "protocolo":
             obtener_protocolo(
                 clase
-            ),
-
-        "interpretacion": (
-            "El resultado representa el nivel relativo "
-            "de concentracion historica de asaltos "
-            "aprendido por el modelo visual."
-        )
+            )
     }
 
+
     print(
-        "6. Resultado:",
+        "Resultado final:",
         resultado,
         flush=True
     )
 
+
     return resultado
 
 
-# ============================================================
-# RUTA PRINCIPAL
-# ============================================================
 
 @app.route(
     "/",
@@ -381,8 +631,9 @@ def evaluar_ubicacion(
 def inicio():
 
     return jsonify({
+
         "servicio":
-            "API de riesgo por zona",
+            "API de evaluacion de riesgo por zona",
 
         "estado":
             "activo",
@@ -391,13 +642,13 @@ def inicio():
             MODEL_PATH,
 
         "clases":
-            CLASES
+            CLASES,
+
+        "eventos_historicos_cargados":
+            len(eventos)
     })
 
 
-# ============================================================
-# RUTA DE SALUD
-# ============================================================
 
 @app.route(
     "/salud",
@@ -406,17 +657,18 @@ def inicio():
 def salud():
 
     return jsonify({
+
         "estado":
             "ok",
 
         "modelo":
-            "cargado"
+            "cargado",
+
+        "eventos":
+            len(eventos)
     })
 
 
-# ============================================================
-# RUTA DE DIAGNOSTICO
-# ============================================================
 
 @app.route(
     "/diagnostico",
@@ -425,30 +677,36 @@ def salud():
 def diagnostico():
 
     return jsonify({
+
         "modelo":
             MODEL_PATH,
 
         "clases":
             CLASES,
 
-        "entrada":
+        "forma_entrada":
             str(
                 modelo.input_shape
             ),
 
-        "salida":
+        "forma_salida":
             str(
                 modelo.output_shape
             ),
 
-        "configuracion":
-            CONFIGURACION
+        "eventos_historicos":
+            len(eventos),
+
+        "radios":
+            [
+                "250m",
+                "500m",
+                "1km",
+                "2km"
+            ]
     })
 
 
-# ============================================================
-# RUTA DE PREDICCION
-# ============================================================
 
 @app.route(
     "/predecir",
@@ -461,11 +719,13 @@ def predecir():
         flush=True
     )
 
+
     try:
 
         datos = request.get_json(
             silent=True
         ) or {}
+
 
         latitud = float(
             datos.get(
@@ -473,11 +733,14 @@ def predecir():
             )
         )
 
+
         longitud = float(
             datos.get(
                 "longitud"
             )
         )
+
+
 
         if not (
             -90 <= latitud <= 90
@@ -486,61 +749,84 @@ def predecir():
         ):
 
             return jsonify({
+
                 "error":
                     "Coordenadas fuera de rango."
+
             }), 400
+
+
+        # ====================================================
+        # EJECUTAR EVALUACION
+        # ====================================================
 
         resultado = evaluar_ubicacion(
             latitud,
             longitud
         )
 
+
         return jsonify(
             resultado
         )
 
+
     except (
         TypeError,
         ValueError
-    ):
+    ) as error:
+
+        print(
+            "Error de coordenadas:",
+            str(error),
+            flush=True
+        )
+
 
         return jsonify({
+
             "error":
                 "Latitud y longitud son obligatorias "
                 "y deben ser numericas."
+
         }), 400
+
 
     except Exception as error:
 
         print(
-            "ERROR:",
+            "ERROR DURANTE LA PREDICCION:",
             str(error),
             flush=True
         )
+
 
         app.logger.exception(
             error
         )
 
+
         return jsonify({
+
             "error":
-                "No fue posible evaluar la zona."
+                "No fue posible evaluar la ubicacion."
+
         }), 500
 
 
-# ============================================================
-# EJECUCION LOCAL
-# ============================================================
 
 if __name__ == "__main__":
 
     app.run(
+
         host="0.0.0.0",
+
         port=int(
             os.getenv(
                 "PORT",
                 5000
             )
         ),
+
         debug=False
     )
