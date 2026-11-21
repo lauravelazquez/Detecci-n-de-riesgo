@@ -1,30 +1,41 @@
 import os
 import json
+from io import BytesIO
 
+import matplotlib
+
+# Render no tiene una pantalla gráfica.
+# Agg permite generar las imágenes sin interfaz.
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from PIL import Image
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from staticmap import StaticMap, CircleMarker
 from sklearn.neighbors import BallTree
 
-
-
 app = Flask(__name__)
-CORS(app)
 
+CORS(app)
 
 
 MODEL_PATH = os.getenv(
     "MODEL_PATH",
-    "modelo_riesgo_zona.keras"
+    "modelo_riesgo_densidad.keras"
 )
 
 CLASSES_PATH = os.getenv(
     "CLASSES_PATH",
-    "clases_riesgo_zona.json"
+    "clases_riesgo_densidad.json"
+)
+
+CONFIG_PATH = os.getenv(
+    "CONFIG_PATH",
+    "configuracion_riesgo_densidad.json"
 )
 
 EVENTS_PATH = os.getenv(
@@ -35,6 +46,7 @@ EVENTS_PATH = os.getenv(
 
 
 tf.config.threading.set_inter_op_parallelism_threads(1)
+
 tf.config.threading.set_intra_op_parallelism_threads(1)
 
 
@@ -50,19 +62,61 @@ with open(
     encoding="utf-8"
 ) as archivo:
 
-    CLASES = json.load(archivo)
+    CLASES = json.load(
+        archivo
+    )
 
 
 print(
-    "Clases:",
+    "Clases cargadas:",
     CLASES,
     flush=True
 )
 
 
+if os.path.exists(
+    CONFIG_PATH
+):
+
+    with open(
+        CONFIG_PATH,
+        "r",
+        encoding="utf-8"
+    ) as archivo:
+
+        CONFIGURACION = json.load(
+            archivo
+        )
+
+else:
+
+    CONFIGURACION = {}
+
+
+RADIO_VISUAL_KM = float(
+    CONFIGURACION.get(
+        "radio_visual_km",
+        2.0
+    )
+)
+
 
 print(
-    "Cargando modelo...",
+    "Configuracion cargada:",
+    CONFIGURACION,
+    flush=True
+)
+
+print(
+    "Radio visual:",
+    RADIO_VISUAL_KM,
+    "km",
+    flush=True
+)
+
+
+print(
+    "Cargando modelo de densidad...",
     flush=True
 )
 
@@ -77,17 +131,16 @@ print(
 )
 
 print(
-    "Entrada:",
+    "Entrada del modelo:",
     modelo.input_shape,
     flush=True
 )
 
 print(
-    "Salida:",
+    "Salida del modelo:",
     modelo.output_shape,
     flush=True
 )
-
 
 
 print(
@@ -99,6 +152,8 @@ eventos = pd.read_csv(
     EVENTS_PATH
 )
 
+
+# Limpiar los nombres de las columnas
 
 eventos.columns = [
     str(columna)
@@ -128,7 +183,7 @@ if not columnas_requeridas.issubset(
     )
 
 
-# Convertir coordenadas
+# Convertir coordenadas a numeros
 
 eventos["LATITUD"] = pd.to_numeric(
     eventos["LATITUD"],
@@ -155,7 +210,7 @@ eventos = (
 )
 
 
-# Validar rangos
+# Conservar solamente coordenadas validas
 
 eventos = eventos[
     eventos["LATITUD"].between(
@@ -176,6 +231,13 @@ print(
     flush=True
 )
 
+
+if len(eventos) == 0:
+
+    raise ValueError(
+        "eventos_historicos.csv no contiene "
+        "coordenadas validas."
+    )
 
 
 RADIO_TIERRA_KM = 6371.0088
@@ -208,8 +270,7 @@ print(
 )
 
 
-
-def contar_eventos_radio(
+def obtener_indices_radio(
     latitud,
     longitud,
     radio_km
@@ -229,10 +290,25 @@ def contar_eventos_radio(
     )[0]
 
 
+    return indices
+
+
+def contar_eventos_radio(
+    latitud,
+    longitud,
+    radio_km
+):
+
+    indices = obtener_indices_radio(
+        latitud,
+        longitud,
+        radio_km
+    )
+
+
     return int(
         len(indices)
     )
-
 
 
 def obtener_conteos(
@@ -242,33 +318,29 @@ def obtener_conteos(
 
     conteos = {
 
-        "250m":
-            contar_eventos_radio(
-                latitud,
-                longitud,
-                0.25
-            ),
+        "250m": contar_eventos_radio(
+            latitud,
+            longitud,
+            0.25
+        ),
 
-        "500m":
-            contar_eventos_radio(
-                latitud,
-                longitud,
-                0.50
-            ),
+        "500m": contar_eventos_radio(
+            latitud,
+            longitud,
+            0.50
+        ),
 
-        "1km":
-            contar_eventos_radio(
-                latitud,
-                longitud,
-                1.00
-            ),
+        "1km": contar_eventos_radio(
+            latitud,
+            longitud,
+            1.00
+        ),
 
-        "2km":
-            contar_eventos_radio(
-                latitud,
-                longitud,
-                2.00
-            )
+        "2km": contar_eventos_radio(
+            latitud,
+            longitud,
+            2.00
+        )
     }
 
 
@@ -282,71 +354,197 @@ def obtener_conteos(
     return conteos
 
 
-
-def generar_mapa(
-    latitud,
-    longitud
+def generar_imagen_densidad(
+    latitud_centro,
+    longitud_centro,
+    radio_km=2.0
 ):
 
     print(
-        "Generando mapa...",
+        "Generando imagen de densidad...",
         flush=True
     )
 
 
-    # IMPORTANTE:
-    # Debe coincidir con las imagenes de entrenamiento
+    # Buscar los eventos dentro del radio visual
 
-    mapa = StaticMap(
-        244,
-        244
+    indices = obtener_indices_radio(
+        latitud_centro,
+        longitud_centro,
+        radio_km
     )
 
 
-    marcador = CircleMarker(
+    eventos_cercanos = coordenadas_eventos[
+        indices
+    ]
+
+
+    print(
+        "Eventos usados en la imagen:",
+        len(eventos_cercanos),
+        flush=True
+    )
+
+
+    # Calcular el rango geográfico de la imagen
+
+    delta_latitud = (
+        radio_km /
+        111.0
+    )
+
+
+    coseno_latitud = np.cos(
+        np.radians(
+            latitud_centro
+        )
+    )
+
+
+    # Protección para evitar división entre cero
+
+    coseno_latitud = max(
+        abs(coseno_latitud),
+        0.000001
+    )
+
+
+    delta_longitud = (
+        radio_km /
         (
-            longitud,
-            latitud
+            111.0 *
+            coseno_latitud
+        )
+    )
+
+
+    # Crear exactamente una imagen de 224 x 224
+
+    figura, eje = plt.subplots(
+        figsize=(
+            2.24,
+            2.24
         ),
-        "#FF0000",
-        7
+        dpi=100
     )
 
 
-    mapa.add_marker(
-        marcador
+    figura.patch.set_facecolor(
+        "#f8fafc"
     )
 
 
-    imagen = mapa.render(
-        zoom=16
+    eje.set_facecolor(
+        "#f8fafc"
     )
 
 
-    print(
-        "Mapa generado.",
-        flush=True
+    # Dibujar los eventos históricos en rojo
+
+    if len(
+        eventos_cercanos
+    ) > 0:
+
+        eje.scatter(
+            eventos_cercanos[:, 1],
+            eventos_cercanos[:, 0],
+            s=18,
+            c="#dc2626",
+            alpha=0.65,
+            edgecolors="none"
+        )
+
+
+    # Dibujar la ubicación consultada con una X azul
+
+    eje.scatter(
+        longitud_centro,
+        latitud_centro,
+        s=55,
+        c="#2563eb",
+        marker="x",
+        linewidths=2
     )
 
 
-    return imagen
+    # Mantener la misma escala de 2 km
 
-
-
-def preparar_imagen(
-    imagen
-):
-
-    print(
-        "Preparando imagen...",
-        flush=True
+    eje.set_xlim(
+        longitud_centro - delta_longitud,
+        longitud_centro + delta_longitud
     )
 
 
-    imagen = imagen.convert(
+    eje.set_ylim(
+        latitud_centro - delta_latitud,
+        latitud_centro + delta_latitud
+    )
+
+
+    # Ocultar ejes, etiquetas y bordes
+
+    eje.axis(
+        "off"
+    )
+
+
+    plt.subplots_adjust(
+        left=0,
+        right=1,
+        top=1,
+        bottom=0
+    )
+
+
+    # Guardar la imagen en memoria
+
+    buffer = BytesIO()
+
+
+    figura.savefig(
+        buffer,
+        format="png",
+        dpi=100,
+        pad_inches=0,
+        facecolor="#f8fafc"
+    )
+
+
+    plt.close(
+        figura
+    )
+
+
+    buffer.seek(0)
+
+
+    # Abrir la imagen generada
+
+    imagen = Image.open(
+        buffer
+    ).convert(
         "RGB"
     )
 
+
+    # Garantizar 224 x 224
+
+    if imagen.size != (
+        224,
+        224
+    ):
+
+        imagen = imagen.resize(
+            (
+                224,
+                224
+            ),
+            Image.Resampling.BILINEAR
+        )
+
+
+    # Convertir a arreglo
 
     arreglo = np.asarray(
         imagen,
@@ -354,41 +552,31 @@ def preparar_imagen(
     )
 
 
-    # Durante el entrenamiento utilizaste 224x224
-
-    arreglo = tf.image.resize(
-        arreglo,
-        (
-            224,
-            224
-        )
-    )
-
+    # Agregar dimensión batch:
+    # (224,224,3) -> (1,224,224,3)
 
     entrada = np.expand_dims(
-        arreglo.numpy(),
+        arreglo,
         axis=0
     )
 
 
+    buffer.close()
+
+
     print(
-        "Forma de entrada:",
+        "Forma de la imagen de densidad:",
         entrada.shape,
         flush=True
     )
 
 
     print(
-        "Min pixel:",
+        "Rango de pixeles:",
         float(
             entrada.min()
         ),
-        flush=True
-    )
-
-
-    print(
-        "Max pixel:",
+        "-",
         float(
             entrada.max()
         ),
@@ -397,7 +585,6 @@ def preparar_imagen(
 
 
     return entrada
-
 
 
 def obtener_protocolo(
@@ -409,8 +596,8 @@ def obtener_protocolo(
         return (
             "ALERTA: Zona clasificada con alta "
             "concentracion historica de asaltos. "
-            "Considerar monitoreo GPS y medidas "
-            "adicionales de seguridad."
+            "Considerar monitoreo GPS, cambio de horario "
+            "y medidas adicionales de seguridad."
         )
 
 
@@ -438,7 +625,6 @@ def obtener_protocolo(
     )
 
 
-
 def evaluar_ubicacion(
     latitud,
     longitud
@@ -449,10 +635,12 @@ def evaluar_ubicacion(
         flush=True
     )
 
+
     print(
         "========================================",
         flush=True
     )
+
 
     print(
         f"Evaluando ubicacion: "
@@ -461,6 +649,7 @@ def evaluar_ubicacion(
     )
 
 
+    # 1. Contar eventos históricos
 
     conteos = obtener_conteos(
         latitud,
@@ -468,22 +657,20 @@ def evaluar_ubicacion(
     )
 
 
+    # 2. Crear la imagen de densidad
+    # Esta imagen reemplaza totalmente StaticMap
 
-    imagen = generar_mapa(
+    entrada = generar_imagen_densidad(
         latitud,
-        longitud
+        longitud,
+        RADIO_VISUAL_KM
     )
 
 
-
-    entrada = preparar_imagen(
-        imagen
-    )
-
-
+    # 3. Ejecutar MobileNetV2
 
     print(
-        "Ejecutando modelo...",
+        "Ejecutando modelo de densidad...",
         flush=True
     )
 
@@ -506,6 +693,7 @@ def evaluar_ubicacion(
     )
 
 
+    # 4. Obtener clase ganadora
 
     indice = int(
         np.argmax(
@@ -514,9 +702,11 @@ def evaluar_ubicacion(
     )
 
 
-    clase = CLASES[
-        indice
-    ]
+    clase = str(
+        CLASES[
+            indice
+        ]
+    )
 
 
     confianza = float(
@@ -540,6 +730,7 @@ def evaluar_ubicacion(
     )
 
 
+    # 5. Probabilidades por clase
 
     desglose = {}
 
@@ -549,7 +740,7 @@ def evaluar_ubicacion(
     ):
 
         desglose[
-            nombre_clase
+            str(nombre_clase)
         ] = round(
             float(
                 probabilidades[
@@ -560,6 +751,7 @@ def evaluar_ubicacion(
         )
 
 
+    # 6. Resultado final
 
     resultado = {
 
@@ -574,10 +766,8 @@ def evaluar_ubicacion(
             )
         ],
 
-
         "riesgo_detectado":
             clase,
-
 
         "confianza_porcentaje":
             round(
@@ -585,10 +775,8 @@ def evaluar_ubicacion(
                 2
             ),
 
-
         "desglose_probabilidades":
             desglose,
-
 
         "eventos_historicos": {
 
@@ -605,11 +793,19 @@ def evaluar_ubicacion(
                 conteos["2km"]
         },
 
-
         "protocolo":
             obtener_protocolo(
                 clase
-            )
+            ),
+
+        "modelo_utilizado":
+            MODEL_PATH,
+
+        "tipo_imagen":
+            "densidad_eventos",
+
+        "radio_visual_km":
+            RADIO_VISUAL_KM
     }
 
 
@@ -623,17 +819,18 @@ def evaluar_ubicacion(
     return resultado
 
 
-
 @app.route(
     "/",
-    methods=["GET"]
+    methods=[
+        "GET"
+    ]
 )
 def inicio():
 
     return jsonify({
 
         "servicio":
-            "API de evaluacion de riesgo por zona",
+            "API de evaluacion visual de riesgo por densidad",
 
         "estado":
             "activo",
@@ -645,14 +842,21 @@ def inicio():
             CLASES,
 
         "eventos_historicos_cargados":
-            len(eventos)
-    })
+            len(eventos),
 
+        "tipo_imagen":
+            "densidad_eventos",
+
+        "radio_visual_km":
+            RADIO_VISUAL_KM
+    })
 
 
 @app.route(
     "/salud",
-    methods=["GET"]
+    methods=[
+        "GET"
+    ]
 )
 def salud():
 
@@ -669,10 +873,11 @@ def salud():
     })
 
 
-
 @app.route(
     "/diagnostico",
-    methods=["GET"]
+    methods=[
+        "GET"
+    ]
 )
 def diagnostico():
 
@@ -697,20 +902,29 @@ def diagnostico():
         "eventos_historicos":
             len(eventos),
 
-        "radios":
-            [
-                "250m",
-                "500m",
-                "1km",
-                "2km"
-            ]
-    })
+        "tipo_imagen":
+            "densidad_eventos",
 
+        "radio_visual_km":
+            RADIO_VISUAL_KM,
+
+        "configuracion":
+            CONFIGURACION,
+
+        "radios_conteo": [
+            "250m",
+            "500m",
+            "1km",
+            "2km"
+        ]
+    })
 
 
 @app.route(
     "/predecir",
-    methods=["POST"]
+    methods=[
+        "POST"
+    ]
 )
 def predecir():
 
@@ -741,6 +955,7 @@ def predecir():
         )
 
 
+        # Validar coordenadas
 
         if not (
             -90 <= latitud <= 90
@@ -755,10 +970,6 @@ def predecir():
 
             }), 400
 
-
-        # ====================================================
-        # EJECUTAR EVALUACION
-        # ====================================================
 
         resultado = evaluar_ubicacion(
             latitud,
@@ -812,7 +1023,6 @@ def predecir():
                 "No fue posible evaluar la ubicacion."
 
         }), 500
-
 
 
 if __name__ == "__main__":
