@@ -1,0 +1,8 @@
+{
+    "umbral_medio": 33.0,
+    "umbral_alto": 64.7,
+    "percentil_medio": 60,
+    "percentil_alto": 85,
+    "radio_visual_km": 2.0,
+    "tipo_imagen": "densidad_eventos"
+}
