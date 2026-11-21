@@ -35,7 +35,50 @@
   </section>
   <section id="resultCard" class="card result-card hidden" aria-live="polite">
     <div class="result-head"><div><p class="eyebrow dark">RESULTADO DEL MODELO</p><h2 id="riskValue">Pendiente</h2></div><div id="riskBadge" class="badge">--</div></div>
-    <div class="metrics"><div><span>Confianza</span><strong id="confidenceValue">--</strong></div><div><span>Coordenadas</span><strong id="coordinatesValue">--</strong></div></div>
+    <div class="metrics"><div><span>Confianza</span><strong id="confidenceValue">--</strong></div><div><span>Coordenadas</span><strong id="coordinatesValue">--</strong>
+    <!-- =====================================================
+     EVENTOS HISTORICOS
+     ===================================================== -->
+
+<div class="eventos-card">
+
+    <h3>Eventos históricos cercanos</h3>
+
+    <p>
+        Cantidad de eventos registrados alrededor
+        de la ubicación consultada.
+    </p>
+
+    <div class="eventos-grid">
+
+        <div class="evento-item">
+            <span>250 m</span>
+            <strong id="eventos250">0</strong>
+            <small>eventos</small>
+        </div>
+
+        <div class="evento-item">
+            <span>500 m</span>
+            <strong id="eventos500">0</strong>
+            <small>eventos</small>
+        </div>
+
+        <div class="evento-item">
+            <span>1 km</span>
+            <strong id="eventos1km">0</strong>
+            <small>eventos</small>
+        </div>
+
+        <div class="evento-item">
+            <span>2 km</span>
+            <strong id="eventos2km">0</strong>
+            <small>eventos</small>
+        </div>
+
+    </div>
+
+</div>
+    </div></div>
     <div class="probabilities">
       <p>Probabilidades</p>
       <div class="bar-row"><span>ALTO</span><div class="bar"><i id="barAlto"></i></div><b id="probAlto">0%</b></div>
